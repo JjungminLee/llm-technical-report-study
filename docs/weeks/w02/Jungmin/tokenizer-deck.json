@@ -1,0 +1,224 @@
+{
+  "title": "W02 Background · Tokenizer·BPE·Byte Fallback",
+  "subtitle": "이정민 · Llama 2 스터디 · 검토 전 초안",
+  "slides": [
+    {
+      "section": "1",
+      "section_label": "왜 subword인가",
+      "layout": "split",
+      "title": "모델은 글자가 아니라<br>숫자만 계산합니다",
+      "body": "<p class=\"lead\">“안녕하세요”를 모델에 넣으려면 <b>토큰</b>으로 자르고, 토큰을 <b>정수 ID</b>로 바꾸고, ID로 <b>임베딩 벡터</b>를 찾아야 합니다.</p>\n<p>Llama 2 논문은 이 첫 단계를 “LLaMA 1과 같은 tokenizer를 쓴다” 한 줄로 넘깁니다. 오늘은 그 한 줄 뒤에 있는 것을 풉니다.</p>",
+      "visual": "<style>\n.toks{display:inline-flex;flex-wrap:wrap;gap:5px;align-items:center}\n.tk{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:16px;line-height:1.3;padding:4px 8px;border-radius:7px;border:1.5px solid var(--line);background:#fff;color:var(--ink);white-space:nowrap}\n.tk.byte{border-color:var(--orange);background:var(--orange-s);color:var(--orange)}\n.tk.sp{border-style:dashed;color:var(--muted)}\n.tk.new{border-color:var(--blue);background:var(--blue-s);color:var(--blue);font-weight:700}\n.tk.unk{border-color:var(--red);background:var(--red-s);color:var(--red)}\n.toks.sm .tk{font-size:14px;padding:2px 6px}\n.toks+.toks{margin-left:18px}\n.hbar-chart.compact{gap:12px;padding:0}.hbar-chart.compact .hbar-head{margin-bottom:4px;font-size:17px}\n.hbar-chart.compact .hbar-head strong{font-size:20px}.hbar-chart.compact .hbar-track{height:18px}.hbar-chart.compact .chart-axis{margin-top:-2px}\n.ladder{display:grid;grid-template-columns:150px minmax(0,1fr);gap:10px 16px;align-items:center;background:var(--box);border:1px solid var(--line);border-radius:12px;padding:20px 22px}\n.ladder .rl{font-size:15px;line-height:1.4;color:var(--muted)}\n.ladder .rl b{display:block;color:var(--ink);font-size:16px}\n.ladder .done{grid-column:1/-1;border-top:1px solid var(--line);padding-top:12px;font-size:16px;color:var(--ink2)}\n.code{margin:0;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13.5px;line-height:1.5;background:#FBFCFD;border:1px solid var(--line);border-radius:10px;padding:12px 14px;white-space:pre;overflow-x:auto;color:var(--ink)}\n.code .c{color:var(--green)}.code .o{color:var(--muted)}\n.code.out{background:var(--gray-s);font-size:13px}\n.panel{display:flex;flex-direction:column;gap:9px;min-width:0;background:var(--box);border:1px solid var(--line);border-radius:12px;padding:16px 16px 14px}\n.panel h3{margin:0;font-size:18px;line-height:1.4}\n.panel .m{font-size:13.5px;line-height:1.5;color:var(--muted);margin:0}\n.chips-row{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;font-size:15px;color:var(--muted)}\n.tbl td .toks{vertical-align:middle}\n.tbl.tight td,.tbl.tight th{padding:9px 12px}\n.quote{font-size:16px;line-height:1.6;color:var(--ink2);border-left:3px solid var(--blue);padding:8px 14px;background:var(--blue-s);border-radius:0 8px 8px 0;margin:0}\n.oq{margin:0;padding-left:1.2em;font-size:18px;line-height:1.6;color:var(--ink2)}\n.oq li+li{margin-top:6px}\n.layout-process .tbl td,.layout-reference .tbl td{vertical-align:middle}\n.layout-reference .tbl.cols4 th:first-child,.layout-reference .tbl.cols4 td:first-child{width:18%}\n.layout-reference .tbl.alg th:first-child,.layout-reference .tbl.alg td:first-child{width:16%}\n@media(max-width:819px){.ladder{grid-template-columns:1fr;gap:6px}.ladder .rl{margin-top:8px}.code{font-size:12px}}\n</style><div class=\"flow vertical\">\n<div class=\"bx\"><div class=\"k muted\">문자열</div><div class=\"t\">안녕하세요</div></div>\n<div class=\"arrow\">↓ <span class=\"small muted\">tokenizer가 자름</span></div>\n<div class=\"bx blue\"><div class=\"k tb\">토큰 8개 · 실제 LLaMA tokenizer 출력</div><span class=\"toks \"><span class=\"tk sp\">▁</span><span class=\"tk \">안</span><span class=\"tk byte\">&lt;0xEB&gt;</span><span class=\"tk byte\">&lt;0x85&gt;</span><span class=\"tk byte\">&lt;0x95&gt;</span><span class=\"tk \">하</span><span class=\"tk \">세</span><span class=\"tk \">요</span></span><div class=\"m\">주황 = 바이트 토큰(“녕”) · 점선 = 공백 표시 ▁</div></div>\n<div class=\"arrow\">↓ <span class=\"small muted\">어휘 표에서 번호 찾기</span></div>\n<div class=\"bx\"><div class=\"k muted\">정수 ID 8개</div><div class=\"d\"><code>[id₁, id₂, …, id₈]</code> <span class=\"m\">— 실제 번호는 생략</span></div></div>\n<div class=\"arrow\">↓ <span class=\"small muted\">임베딩 행렬 32,000 × 4,096 (LLaMA-7B)에서 행 조회</span></div>\n<div class=\"bx gray\"><div class=\"k muted\">벡터 8개 → Transformer</div></div>\n</div><p class=\"cap\">토큰: “안녕하세요 반갑습니다” 실행 출력의 앞 8개 · d=4,096은 LLaMA 1 Table 2의 7B 설정</p>",
+      "note": "모델은 글자가 아니라 숫자만 계산합니다. 문장을 어떻게 숫자로 바꿀지가 첫 질문입니다. Llama 2 논문은 이걸 “LLaMA 1과 같은 tokenizer를 쓴다” 한 줄로 넘깁니다. 그 한 줄 뒤에 무엇이 있는지 풀어 보겠습니다. (1분)",
+      "sources": [
+        {
+          "label": "Llama 2 v2 · §2.2 Tokenizer",
+          "url": "https://arxiv.org/pdf/2307.09288v2#page=6"
+        },
+        {
+          "label": "LLaMA 1 v1 · Table 2",
+          "url": "https://arxiv.org/pdf/2302.13971v1#page=3"
+        }
+      ]
+    },
+    {
+      "section": "1",
+      "section_label": "왜 subword인가",
+      "layout": "reference",
+      "title": "단어는 모르는 말에 막히고,<br>문자는 너무 길어집니다",
+      "body": "<p>그래서 자주 나오는 조각은 크게, 드문 것은 잘게 자르는 <b>subword</b>를 씁니다.</p>\n<p>핵심은 줄다리기입니다. 어휘를 키우면 시퀀스는 짧아지지만 임베딩 표가 커집니다.</p>",
+      "visual": "<div class=\"table-wrap\"><table class=\"tbl tight cols4\"><thead><tr><th>단위</th><th>“lowest”를 자르면</th><th>어휘 크기</th><th>약점</th></tr></thead><tbody>\n<tr><td><b>단어</b></td><td><span class=\"toks \"><span class=\"tk \">lowest</span></span> 또는 <span class=\"toks \"><span class=\"tk unk\">&lt;unk&gt;</span></span></td><td>열린 집합 · 계속 늘어남</td><td>처음 보는 단어가 <code>&lt;unk&gt;</code>가 되고 어휘가 폭발</td></tr>\n<tr><td><b>문자</b></td><td><span class=\"toks sm\"><span class=\"tk \">l</span><span class=\"tk \">o</span><span class=\"tk \">w</span><span class=\"tk \">e</span><span class=\"tk \">s</span><span class=\"tk \">t</span></span></td><td>작음 (문자 종류 수)</td><td>시퀀스가 길어져 attention 비용 증가 (길이²)</td></tr>\n<tr><td><b>바이트</b></td><td>영어는 문자와 같은 6개 · 한글 음절은 음절당 3개</td><td>256</td><td>가장 길다. 대신 표현 못 하는 글자가 없다</td></tr>\n<tr class=\"em\"><td><b>Subword (BPE)</b></td><td><span class=\"toks \"><span class=\"tk new\">low</span><span class=\"tk new\">est</span></span></td><td>미리 정함 (LLaMA 32,000)</td><td>어휘와 분할 규칙을 데이터로 학습해야 함</td></tr>\n</tbody></table></div>\n<div class=\"annotation blue\"><strong>줄다리기 · 직접 계산</strong><span>어휘 V가 커지면 같은 문장이 더 적은 토큰이 되지만, 임베딩 행렬 V × d가 커집니다. LLaMA-7B 기준 32,000 × 4,096 ≈ <b>1.31억</b> 파라미터 (입력 임베딩 하나).</span></div>",
+      "note": "단어 단위는 처음 보는 단어가 <unk>가 되고 어휘가 폭발합니다. 문자 단위는 시퀀스가 길어져 attention 비용이 커집니다. 그래서 자주 나오는 조각은 크게, 드문 것은 잘게 자르는 subword를 씁니다. 어휘를 키우면 시퀀스가 짧아지지만 임베딩이 커지는 줄다리기가 핵심입니다. (1.5분)",
+      "sources": [
+        {
+          "label": "Sennrich et al. 2016 · §1",
+          "url": "https://arxiv.org/abs/1508.07909"
+        },
+        {
+          "label": "LLaMA 1 v1 · Table 2 (d=4,096)",
+          "url": "https://arxiv.org/pdf/2302.13971v1#page=3"
+        }
+      ]
+    },
+    {
+      "section": "1",
+      "section_label": "왜 subword인가",
+      "layout": "reference",
+      "title": "Subword를 만드는 방법은 셋,<br>LLaMA는 그중 BPE",
+      "body": "<p>오늘은 LLaMA가 쓴 BPE를 깊게 봅니다.</p>\n<p><b>SentencePiece는 알고리즘이 아니라</b> BPE나 Unigram을 돌리는 <b>라이브러리</b>입니다. LLaMA는 SentencePiece 위에서 BPE를 씁니다.</p>",
+      "visual": "<div class=\"table-wrap\"><table class=\"tbl tight alg\"><thead><tr><th></th><th>BPE</th><th>WordPiece</th><th>Unigram</th></tr></thead><tbody>\n<tr><td><b>방향</b></td><td>작은 조각을 <b>합침</b></td><td>작은 조각을 <b>합침</b></td><td>큰 후보 집합에서 <b>지움</b></td></tr>\n<tr><td><b>기준</b></td><td>가장 <b>자주</b> 붙어 나오는 쌍</td><td>합쳤을 때 말뭉치 <b>likelihood</b>를 가장 올리는 쌍</td><td>지워도 likelihood 손실이 가장 작은 조각 (토큰은 서로 <b>독립</b>이라고 가정)</td></tr>\n<tr><td><b>대표 모델</b></td><td>GPT-2·3, LLaMA</td><td>BERT</td><td>T5, ALBERT</td></tr>\n<tr><td><b>원전</b></td><td>Sennrich 2016</td><td>Schuster &amp; Nakajima 2012</td><td>Kudo 2018</td></tr>\n</tbody></table></div>\n<div class=\"annotation green\"><strong>SentencePiece (Kudo &amp; Richardson 2018)가 더한 것</strong><span>공백도 <code>▁</code>(U+2581)라는 글자로 바꿔 텍스트 안에 넣습니다. 언어별 띄어쓰기 전처리 없이 학습할 수 있고, 토큰을 이어 붙이면 원문이 그대로 복원됩니다. 기본 알고리즘은 Unigram이고 BPE도 고를 수 있습니다.</span></div>",
+      "note": "subword를 만드는 방법은 세 가지입니다. 오늘은 LLaMA가 쓴 BPE를 깊게 봅니다. 한 가지 구분: SentencePiece는 알고리즘이 아니라 BPE나 Unigram을 돌리는 라이브러리입니다. LLaMA는 SentencePiece 위에서 BPE를 씁니다. 단어 앞에 붙는 ▁ 표시는 SentencePiece의 규칙입니다(WordPiece는 이어지는 조각에 ##을 붙입니다). (1.5분)",
+      "sources": [
+        {
+          "label": "BPE · Sennrich 2016",
+          "url": "https://arxiv.org/abs/1508.07909"
+        },
+        {
+          "label": "WordPiece · GNMT §4.1",
+          "url": "https://arxiv.org/abs/1609.08144"
+        },
+        {
+          "label": "Unigram · Kudo 2018",
+          "url": "https://arxiv.org/abs/1804.10959"
+        },
+        {
+          "label": "SentencePiece · Kudo & Richardson 2018",
+          "url": "https://arxiv.org/abs/1808.06226"
+        },
+        {
+          "label": "HF Tokenizer summary",
+          "url": "https://huggingface.co/docs/transformers/tokenizer_summary"
+        }
+      ]
+    },
+    {
+      "section": "2",
+      "section_label": "BPE 학습과 적용",
+      "layout": "process",
+      "title": "BPE 학습: 가장 자주 붙는 쌍을<br>합치고, 그 순서를 기록합니다",
+      "body": "<p>① 단어를 글자로 쪼갠다 → ② 인접 쌍의 빈도를 단어 빈도만큼 더해 센다 → ③ 가장 많은 쌍을 새 토큰으로 합친다 → ④ 정한 어휘 크기까지 반복.</p>\n<p>학습의 결과물은 어휘와 <b>병합 규칙의 순서</b>입니다.</p>",
+      "visual": "<div class=\"chips-row\"><b class=\"muted\">초기 말뭉치</b><span class=\"toks sm\"><span class=\"tk \">l</span><span class=\"tk \">o</span><span class=\"tk \">w</span></span> ×5 <span class=\"toks sm\"><span class=\"tk \">l</span><span class=\"tk \">o</span><span class=\"tk \">w</span><span class=\"tk \">e</span><span class=\"tk \">r</span></span> ×2 <span class=\"toks sm\"><span class=\"tk \">n</span><span class=\"tk \">e</span><span class=\"tk \">w</span><span class=\"tk \">e</span><span class=\"tk \">s</span><span class=\"tk \">t</span></span> ×6 <span class=\"toks sm\"><span class=\"tk \">w</span><span class=\"tk \">i</span><span class=\"tk \">d</span><span class=\"tk \">e</span><span class=\"tk \">s</span><span class=\"tk \">t</span></span> ×3</div>\n<div class=\"table-wrap\"><table class=\"tbl tight\"><thead><tr><th style=\"width:8%\">규칙</th><th style=\"width:20%\">병합</th><th style=\"width:26%\">빈도 계산</th><th>병합 후 바뀐 단어</th></tr></thead><tbody>\n<tr><td><b>1</b></td><td>e + s → <span class=\"tk new\">es</span></td><td>newest 6 + widest 3 = <b>9</b></td><td><span class=\"toks sm\"><span class=\"tk \">n</span><span class=\"tk \">e</span><span class=\"tk \">w</span><span class=\"tk new\">es</span><span class=\"tk \">t</span></span> <span class=\"toks sm\"><span class=\"tk \">w</span><span class=\"tk \">i</span><span class=\"tk \">d</span><span class=\"tk new\">es</span><span class=\"tk \">t</span></span></td></tr>\n<tr><td><b>2</b></td><td>es + t → <span class=\"tk new\">est</span></td><td>6 + 3 = <b>9</b></td><td><span class=\"toks sm\"><span class=\"tk \">n</span><span class=\"tk \">e</span><span class=\"tk \">w</span><span class=\"tk new\">est</span></span> <span class=\"toks sm\"><span class=\"tk \">w</span><span class=\"tk \">i</span><span class=\"tk \">d</span><span class=\"tk new\">est</span></span></td></tr>\n<tr><td><b>3</b></td><td>l + o → <span class=\"tk new\">lo</span></td><td>low 5 + lower 2 = <b>7</b></td><td><span class=\"toks sm\"><span class=\"tk new\">lo</span><span class=\"tk \">w</span></span> <span class=\"toks sm\"><span class=\"tk new\">lo</span><span class=\"tk \">w</span><span class=\"tk \">e</span><span class=\"tk \">r</span></span></td></tr>\n<tr><td><b>4</b></td><td>lo + w → <span class=\"tk new\">low</span></td><td>5 + 2 = <b>7</b></td><td><span class=\"toks sm\"><span class=\"tk new\">low</span></span> <span class=\"toks sm\"><span class=\"tk new\">low</span><span class=\"tk \">e</span><span class=\"tk \">r</span></span></td></tr>\n</tbody></table></div>\n<p class=\"cap\">동점: 1단계 e+s = s+t = 9, 3단계 l+o = o+w = 7 → 먼저 센 쌍을 고르는 구현 규칙으로 결정<br>Python <code>Counter.most_common</code>과 Node 재구현에서 같은 순서 확인 · 알고리즘: Sennrich 2016 Algorithm 1</p>",
+      "note": "글자로 쪼개고, 가장 자주 붙는 쌍을 합쳐 새 토큰으로 어휘에 넣고, 다시 세서 반복합니다. 정한 어휘 크기, LLaMA는 32,000개가 될 때까지 합니다. 중요한 건 합친 순서가 곧 규칙이라는 점입니다. 동점이 두 번 나오는데, 이건 구현이 먼저 센 쌍을 고르기 때문에 정해진 것입니다. (3분 · 중심 슬라이드, 화이트보드로 1단계 빈도를 직접 세어 보여 주기)",
+      "sources": [
+        {
+          "label": "Sennrich et al. 2016 · §3.2 · Algorithm 1",
+          "url": "https://arxiv.org/abs/1508.07909"
+        }
+      ]
+    },
+    {
+      "section": "2",
+      "section_label": "BPE 학습과 적용",
+      "layout": "split",
+      "title": "학습한 BPE 적용: 새 단어에<br>배운 순서대로 병합을 겁니다",
+      "body": "<p>쓸 때는 빈도를 다시 세지 않습니다. 글자로 쪼갠 뒤 규칙 1→4를 <b>순서대로</b> 적용합니다.</p>\n<p>학습 말뭉치에 없던 <b>lowest</b>도 아는 조각 <b>low + est</b>로 잘립니다.</p>\n<p class=\"note\">규칙 2(es+t)는 규칙 1이 만든 es가 있어야 걸립니다. 그래서 순서가 곧 규칙입니다. LLaMA tokenizer를 어떤 데이터로 학습했는지는 원문에 없습니다.</p>",
+      "visual": "<div class=\"ladder\">\n<div class=\"rl\"><b>시작</b>글자로 쪼갬</div><div><span class=\"toks \"><span class=\"tk \">l</span><span class=\"tk \">o</span><span class=\"tk \">w</span><span class=\"tk \">e</span><span class=\"tk \">s</span><span class=\"tk \">t</span></span></div>\n<div class=\"rl\"><b>규칙 1</b>e + s</div><div><span class=\"toks \"><span class=\"tk \">l</span><span class=\"tk \">o</span><span class=\"tk \">w</span><span class=\"tk new\">es</span><span class=\"tk \">t</span></span></div>\n<div class=\"rl\"><b>규칙 2</b>es + t</div><div><span class=\"toks \"><span class=\"tk \">l</span><span class=\"tk \">o</span><span class=\"tk \">w</span><span class=\"tk new\">est</span></span></div>\n<div class=\"rl\"><b>규칙 3</b>l + o</div><div><span class=\"toks \"><span class=\"tk new\">lo</span><span class=\"tk \">w</span><span class=\"tk new\">est</span></span></div>\n<div class=\"rl\"><b>규칙 4</b>lo + w</div><div><span class=\"toks \"><span class=\"tk new\">low</span><span class=\"tk new\">est</span></span></div>\n<div class=\"done\">결과: <span class=\"toks \"><span class=\"tk new\">low</span><span class=\"tk new\">est</span></span> — 토큰 2개</div>\n</div>\n<div class=\"g c2\">\n<div class=\"bx\"><div class=\"k muted\">다른 입력 · slow</div><span class=\"toks \"><span class=\"tk \">s</span><span class=\"tk new\">low</span></span><div class=\"m\">규칙 3·4만 걸림</div></div>\n<div class=\"bx\"><div class=\"k muted\">다른 입력 · newer</div><span class=\"toks \"><span class=\"tk \">n</span><span class=\"tk \">e</span><span class=\"tk \">w</span><span class=\"tk \">e</span><span class=\"tk \">r</span></span><div class=\"m\">걸리는 규칙 없음 → 글자 그대로</div></div>\n</div>\n<p class=\"cap\">위 4개 규칙만 가진 장난감 tokenizer의 결과 · 직접 실행해 확인</p>",
+      "note": "쓸 때는 새 단어를 글자로 쪼갠 뒤 배운 순서대로 병합을 적용합니다. 학습 때 없던 lowest도 아는 조각으로 잘립니다. 그런데 글자 자체가 어휘에 없으면 어떻게 될까요? 그게 다음 장의 byte fallback입니다. 참고로 원문은 tokenizer를 어떤 데이터로 학습했는지 적지 않았습니다. (1.5분)",
+      "sources": [
+        {
+          "label": "Sennrich et al. 2016 · §3.2",
+          "url": "https://arxiv.org/abs/1508.07909"
+        },
+        {
+          "label": "LLaMA 1 v1 · §2.1",
+          "url": "https://arxiv.org/pdf/2302.13971v1#page=3"
+        }
+      ]
+    },
+    {
+      "section": "3",
+      "section_label": "Byte Fallback",
+      "layout": "split",
+      "title": "Byte Fallback: 어휘에 없는 글자는<br>UTF-8 바이트로 쪼갭니다",
+      "body": "<p>모든 글자는 UTF-8로 1–4바이트입니다(영어 1, 한글 음절 3, 이모지 4). 바이트 값은 256가지뿐이라 <code>&lt;0x00&gt;</code>…<code>&lt;0xFF&gt;</code>를 어휘에 넣어 두면 <b>어떤 글자도 표현</b>되고 <code>&lt;unk&gt;</code>가 생기지 않습니다.</p>\n<p>대가는 길이입니다. 어휘에 없는 한글 음절 하나가 토큰 3개가 됩니다.</p>\n<p class=\"note\">BPE 병합과는 별개 규칙입니다. 병합은 자주 나오는 조각을 만들고, byte fallback은 어휘 밖 글자를 처리합니다.</p>",
+      "visual": "<div class=\"table-wrap\"><table class=\"tbl tight\"><thead><tr><th style=\"width:9%\">글자</th><th style=\"width:25%\">UTF-8 바이트</th><th style=\"width:11%\">어휘에</th><th>LLaMA 토큰 (앞 ▁ 제외)</th></tr></thead><tbody>\n<tr><td><b>안</b></td><td><code>EC 95 88</code> (3)</td><td class=\"tg\">있음</td><td><span class=\"toks sm\"><span class=\"tk \">안</span></span> 1개</td></tr>\n<tr><td><b>녕</b></td><td><code>EB 85 95</code> (3)</td><td class=\"to\">없음</td><td><span class=\"toks sm\"><span class=\"tk byte\">&lt;0xEB&gt;</span><span class=\"tk byte\">&lt;0x85&gt;</span><span class=\"tk byte\">&lt;0x95&gt;</span></span> 3개</td></tr>\n<tr><td><b>😀</b></td><td><code>F0 9F 98 80</code> (4)</td><td class=\"to\">없음</td><td><span class=\"toks sm\"><span class=\"tk byte\">&lt;0xF0&gt;</span><span class=\"tk byte\">&lt;0x9F&gt;</span><span class=\"tk byte\">&lt;0x98&gt;</span><span class=\"tk byte\">&lt;0x80&gt;</span></span> 4개</td></tr>\n</tbody></table></div>\n<div class=\"g c2\">\n<div class=\"bx red dash\"><div class=\"k tr\">fallback 없으면</div><span class=\"toks \"><span class=\"tk unk\">&lt;unk&gt;</span></span><div class=\"m\">어떤 글자였는지 정보가 사라지고 원문 복원 불가</div></div>\n<div class=\"bx orange\"><div class=\"k to\">fallback 있으면</div><span class=\"toks \"><span class=\"tk byte\">&lt;0xEB&gt;</span><span class=\"tk byte\">&lt;0x85&gt;</span><span class=\"tk byte\">&lt;0x95&gt;</span></span><div class=\"m\">디코딩 때 바이트를 이어 붙이면 “녕”으로 복원</div></div>\n</div>\n<p class=\"cap\">바이트 값: 직접 계산 · 토큰: huggyllama/llama-7b tokenizer 실행 출력</p>",
+      "note": "어휘에 없는 글자는 <unk> 대신 UTF-8 바이트로 쪼갭니다. 바이트 토큰 256개를 어휘에 미리 넣어 두면 어떤 글자도 표현됩니다. 대가는 길이입니다. 한글 음절이 어휘에 없으면 토큰 3개가 됩니다. (W01 덱은 LLaMA 어휘의 한 음절 한글 토큰이 111개라고 보고했습니다. 이 수치는 제가 재현하지 않았으니 “W01 덱에 따르면”이라고 말합니다.) (2분)",
+      "sources": [
+        {
+          "label": "LLaMA 1 v1 · §2.1",
+          "url": "https://arxiv.org/pdf/2302.13971v1#page=3"
+        },
+        {
+          "label": "SentencePiece · Kudo & Richardson 2018",
+          "url": "https://arxiv.org/abs/1808.06226"
+        },
+        {
+          "label": "W01 덱 · Tokenizer",
+          "url": "../../w01/index.html"
+        }
+      ]
+    },
+    {
+      "section": "4",
+      "section_label": "핸즈온",
+      "layout": "process",
+      "title": "손으로 한 것을 코드로:<br>장난감 BPE와 실제 tokenizer",
+      "body": "<p><b>1단계</b>는 BPE 원리를 구현해 슬라이드 4와 같은 순서가 나오는지 봅니다. <b>2단계</b>는 이미 학습된 LLaMA tokenizer를 불러와 실물을 관찰합니다. huggyllama/llama-7b는 LLaMA 1 재배포본이고, Llama 2는 원문상 같은 tokenizer입니다.</p>",
+      "visual": "<div class=\"g c2\">\n<div class=\"panel\"><h3>1단계 · 장난감 BPE <span class=\"tag\">원리</span></h3><pre class=\"code\">corpus = {\"l o w\": 5, \"l o w e r\": 2,\n          \"n e w e s t\": 6, \"w i d e s t\": 3}\nmerges = []\nfor step in range(4):                <span class=\"c\"># 학습</span>\n    pair, freq = pair_counts(corpus).most_common(1)[0]\n    merges.append(pair)              <span class=\"c\"># 순서 = 규칙</span>\n    corpus = merge(corpus, pair)\ndef encode(word):                    <span class=\"c\"># 적용</span>\n    sym = list(word)\n    for a, b in merges:              <span class=\"c\"># 배운 순서대로</span>\n        sym = merge_pair(sym, a, b)\n    return sym</pre><pre class=\"code out\">merges = [('e','s'), ('es','t'), ('l','o'), ('lo','w')]\nencode(\"lowest\") → ['low', 'est']</pre><p class=\"m\">요약본 · 보조 함수 포함 전체 코드는 Colab</p></div>\n<div class=\"panel\"><h3>2단계 · LLaMA tokenizer <span class=\"tag blue\">실물</span></h3><pre class=\"code\">from transformers import AutoTokenizer\ntok = AutoTokenizer.from_pretrained(\"huggyllama/llama-7b\")\nfor text in [\"2026\", \"안\", \"녕\", \"😀\",\n             \"안녕하세요 반갑습니다\"]:\n    ids = tok(text, add_special_tokens=False).input_ids\n    print(text, len(ids), tok.convert_ids_to_tokens(ids))</pre><pre class=\"code out\">2026 5 ['▁', '2', '0', '2', '6']\n녕 4 ['▁', '&lt;0xEB&gt;', '&lt;0x85&gt;', '&lt;0x95&gt;']\n😀 5 ['▁', '&lt;0xF0&gt;', '&lt;0x9F&gt;', '&lt;0x98&gt;', '&lt;0x80&gt;']</pre><p class=\"m\">출력 일부 · 전체 결과는 다음 장</p></div>\n</div>",
+      "note": "손으로 한 것을 코드로 확인하겠습니다. 1단계는 제가 만든 장난감 BPE로, 단어 4개짜리 말뭉치에서 원리를 봅니다. 2단계는 구현이 아니라 수조 토큰 규모로 학습된 진짜 LLaMA tokenizer를 불러와 관찰합니다. (3분 · Colab 화면 전환)",
+      "sources": [
+        {
+          "label": "Colab 노트북",
+          "url": "https://colab.research.google.com/drive/1RhPo9Znj5DkQaekB9DYxCaly-8ZEOo34"
+        },
+        {
+          "label": "HF Llama 2 문서",
+          "url": "https://huggingface.co/docs/transformers/model_doc/llama2"
+        },
+        {
+          "label": "LLaMA tokenizer playground",
+          "url": "https://lenml.github.io/llama-tokenizer-playground/"
+        }
+      ]
+    },
+    {
+      "section": "4",
+      "section_label": "핸즈온",
+      "layout": "reference",
+      "title": "결과: 녕은 바이트 3개로,<br>숫자는 한 자리씩 잘립니다",
+      "body": "<p>W01 덱과 1씩 다른 것은 맨 앞 <code>▁</code> 때문입니다. SentencePiece는 입력 맨 앞에 공백 표시 ▁를 붙이고, “▁안” 같은 합친 토큰이 어휘에 없으면 ▁가 따로 한 토큰이 됩니다.</p>\n<p>▁를 빼고 보면 결론은 같습니다.</p>",
+      "visual": "<div class=\"table-wrap\"><table class=\"tbl tight cols4\"><thead><tr><th>입력</th><th style=\"width:44%\">내 출력</th><th style=\"width:12%\">W01 덱</th><th>판정</th></tr></thead><tbody>\n<tr><td><code>2026</code></td><td><span class=\"toks sm\"><span class=\"tk sp\">▁</span><span class=\"tk \">2</span><span class=\"tk \">0</span><span class=\"tk \">2</span><span class=\"tk \">6</span></span> 5</td><td>5</td><td class=\"tg\">일치</td></tr>\n<tr><td><code>안</code></td><td><span class=\"toks sm\"><span class=\"tk sp\">▁</span><span class=\"tk \">안</span></span> 2</td><td>1</td><td>▁ 빼면 일치</td></tr>\n<tr><td><code>녕</code></td><td><span class=\"toks sm\"><span class=\"tk sp\">▁</span><span class=\"tk byte\">&lt;0xEB&gt;</span><span class=\"tk byte\">&lt;0x85&gt;</span><span class=\"tk byte\">&lt;0x95&gt;</span></span> 4</td><td>3</td><td>▁ 빼면 일치</td></tr>\n<tr><td><code>😀</code></td><td><span class=\"toks sm\"><span class=\"tk sp\">▁</span><span class=\"tk byte\">&lt;0xF0&gt;</span><span class=\"tk byte\">&lt;0x9F&gt;</span><span class=\"tk byte\">&lt;0x98&gt;</span><span class=\"tk byte\">&lt;0x80&gt;</span></span> 5</td><td>4</td><td>▁ 빼면 일치</td></tr>\n<tr><td><code>안녕하세요 반갑습니다</code></td><td><span class=\"toks sm\"><span class=\"tk sp\">▁</span><span class=\"tk \">안</span><span class=\"tk byte\">녕×3</span><span class=\"tk \">하</span><span class=\"tk \">세</span><span class=\"tk \">요</span><span class=\"tk sp\">▁</span><span class=\"tk byte\">반×3</span><span class=\"tk byte\">갑×3</span><span class=\"tk byte\">습×3</span><span class=\"tk \">니</span><span class=\"tk \">다</span></span> 20</td><td>20</td><td class=\"tg\">일치</td></tr>\n</tbody></table></div>\n<div class=\"annotation green\"><strong>발표자 관찰 · 이 출력 하나에서 본 패턴</strong><span>같은 문장에서 하·세·요·니·다는 1토큰, 녕·반·갑·습은 바이트 3개씩입니다. 10음절(공백 포함 11자)이 20토큰이 됩니다. 어휘에 든 음절은 자주 쓰는 어미 쪽으로 보이지만 일반 법칙으로 확인한 것은 아닙니다.</span></div>",
+      "note": "맨 앞 ▁는 공백 표시 토큰이라 빼고 보면, 녕은 바이트 3개로 쪼개집니다. 핵심은 두 가지입니다. 첫째, byte fallback이 실제로 일어납니다. 둘째, 같은 한글인데 어휘에 있는 글자와 없는 글자가 갈립니다. 그래서 한국어는 토큰이 많아집니다. 1단계에서 BPE 원리를 직접 구현했고, 2단계에서 실제 LLaMA tokenizer가 한국어 녕을 바이트 3개로 쪼갠다는 걸 확인했습니다.",
+      "sources": [
+        {
+          "label": "huggyllama/llama-7b 실행 출력 (발표자)",
+          "url": "https://colab.research.google.com/drive/1RhPo9Znj5DkQaekB9DYxCaly-8ZEOo34"
+        },
+        {
+          "label": "W01 덱 · Tokenizer",
+          "url": "../../w01/index.html"
+        }
+      ]
+    },
+    {
+      "section": "5",
+      "section_label": "LLaMA와 연결",
+      "layout": "reference",
+      "title": "LLaMA의 세 규칙은 PaLM과 같고,<br>어휘만 256k → 32k",
+      "body": "<p class=\"quote\">“We tokenize the data with the byte-pair encoding (BPE) algorithm, using the implementation from SentencePiece. Notably, we split all numbers into individual digits, and fallback to bytes to decompose unknown UTF-8 characters.” — LLaMA 1 §2.1</p>\n<p>원문이 적은 건 이 세 가지뿐이고, <b>이유는 적지 않았습니다.</b></p>",
+      "visual": "<div class=\"table-wrap\"><table class=\"tbl tight\"><thead><tr><th style=\"width:16%\"></th><th>GPT-2 (2019)</th><th>PaLM (2022)</th><th class=\"em\">LLaMA 1 (2023)</th></tr></thead><tbody>\n<tr><td><b>구현</b></td><td>byte-level BPE</td><td>SentencePiece</td><td class=\"em\">SentencePiece BPE</td></tr>\n<tr><td><b>어휘</b></td><td>50,257</td><td>256k</td><td class=\"em\">32,000 <span class=\"muted small\">(Llama 2 §2.2: 32k)</span></td></tr>\n<tr><td><b>숫자</b></td><td>다른 조각처럼 빈도대로 병합</td><td>한 자리씩</td><td class=\"em\">한 자리씩</td></tr>\n<tr><td><b>어휘 밖 문자</b></td><td>처음부터 바이트 단위라 해당 없음</td><td>UTF-8 바이트로 분해</td><td class=\"em\">UTF-8 바이트로 분해</td></tr>\n</tbody></table></div>\n<div class=\"annotation\"><strong>사실과 추측 구분</strong><span>왜 32k인지는 원문에 없습니다. “영어 중심이라 작게 잡았다”는 발표자 추측입니다. 이후 Llama 3는 어휘를 128K(tiktoken 100K + 비영어 28K)로 4배 늘렸습니다.</span></div>",
+      "note": "원문이 적은 건 세 가지입니다. SentencePiece BPE, 숫자 한 자리씩, 모르는 문자는 바이트로. 규칙은 PaLM과 같고 어휘만 256k에서 32k로 줄었습니다. 왜 32k인지는 원문에 이유가 없습니다. 영어 중심이라 작게 잡았을 거라는 건 추측입니다. 이후 Llama 3는 128K로 4배 늘렸습니다. (2.5분)",
+      "sources": [
+        {
+          "label": "LLaMA 1 v1 · §2.1",
+          "url": "https://arxiv.org/pdf/2302.13971v1#page=3"
+        },
+        {
+          "label": "GPT-2 · §2.2",
+          "url": "https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf"
+        },
+        {
+          "label": "PaLM · §2 Vocabulary",
+          "url": "https://arxiv.org/abs/2204.02311"
+        },
+        {
+          "label": "Llama 3 · §3.2",
+          "url": "https://arxiv.org/abs/2407.21783"
+        }
+      ]
+    },
+    {
+      "section": "5",
+      "section_label": "LLaMA와 연결",
+      "layout": "quantitative",
+      "title": "Llama 2는 같은 tokenizer를<br>영어 89.7% 데이터와 씁니다",
+      "body": "<p>Llama 2 §2.2: “same tokenizer as Llama 1”, 어휘 32k. 바뀐 건 tokenizer가 아니라 데이터(2T 토큰)와 구조(4K context, GQA)입니다.</p>\n<p><b>열린 질문</b></p>\n<ol class=\"oq\"><li>왜 이후 어휘를 128K로 늘렸을까?</li><li>한국어 전용 tokenizer를 만들면 무엇이 달라질까?</li></ol>",
+      "visual": "<div class=\"chart-heading\"><span class=\"tag blue\">Llama 2 Table 10</span><strong>사전학습 데이터 언어 분포 · 문서 비율 %</strong></div>\n<div class=\"hbar-chart compact\" role=\"img\" aria-label=\"Llama 2 Table 10: 영어 89.70%, unknown 8.38%, 독일어 0.17%, 중국어 0.13%, 일본어 0.10%, 한국어 0.06%\">\n<div class=\"hbar-row\" data-value=\"89.7\"><div class=\"hbar-head\"><span>영어</span><strong>89.70<small>%</small></strong></div><div class=\"hbar-track\"><div class=\"hbar-fill blue\" style=\"width:89.7%\"></div></div></div><div class=\"hbar-row\" data-value=\"8.38\"><div class=\"hbar-head\"><span>unknown (코드 일부 포함)</span><strong>8.38<small>%</small></strong></div><div class=\"hbar-track\"><div class=\"hbar-fill gray\" style=\"width:8.38%\"></div></div></div><div class=\"hbar-row\" data-value=\"0.17\"><div class=\"hbar-head\"><span>독일어</span><strong>0.17<small>%</small></strong></div><div class=\"hbar-track\"><div class=\"hbar-fill gray\" style=\"width:0.17%\"></div></div></div><div class=\"hbar-row\" data-value=\"0.1\"><div class=\"hbar-head\"><span>일본어</span><strong>0.10<small>%</small></strong></div><div class=\"hbar-track\"><div class=\"hbar-fill gray\" style=\"width:0.1%\"></div></div></div><div class=\"hbar-row\" data-value=\"0.06\"><div class=\"hbar-head\"><span>한국어</span><strong>0.06<small>%</small></strong></div><div class=\"hbar-track\"><div class=\"hbar-fill green\" style=\"width:0.06%\"></div></div></div>\n<div class=\"chart-axis\"><span>0</span><span>25</span><span>50</span><span>75</span><span>100%</span></div></div>\n<div class=\"annotation\"><strong>해석 주의</strong><span>Table 10은 <b>모델</b> 사전학습 데이터의 분포이고, tokenizer 학습 데이터는 공개되지 않았습니다. 한국어 비중이 낮은 것과 한국어 음절이 어휘에 적은 것을 잇는 것은 발표자 해석입니다.</span></div>",
+      "note": "Llama 2는 같은 tokenizer를 계승합니다. 그런데 학습 데이터가 영어 89.7%, 한국어 0.06%라서 byte fallback이 한국어에서 실제로 비쌉니다. (단, Table 10은 모델 학습 데이터 분포라 tokenizer 학습 데이터와 같다고 단정하지 않습니다.) 열린 질문 두 가지: 왜 이후 어휘를 128K로 늘렸을까? 한국어 전용 tokenizer를 만들면 무엇이 달라질까? (1분)",
+      "sources": [
+        {
+          "label": "Llama 2 v2 · §2.2 Tokenizer",
+          "url": "https://arxiv.org/pdf/2307.09288v2#page=6"
+        },
+        {
+          "label": "Llama 2 v2 · §4.1 · Table 10",
+          "url": "https://arxiv.org/pdf/2307.09288v2#page=22"
+        },
+        {
+          "label": "Llama 3 · §3.2",
+          "url": "https://arxiv.org/abs/2407.21783"
+        }
+      ]
+    }
+  ]
+}
